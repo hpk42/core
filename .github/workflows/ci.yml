@@ -31,7 +31,7 @@ env:
 jobs:
   lint_rust:
     name: Lint Rust
-    runs-on: ${{ vars.LINUX_RUNNER_LARGE || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -45,7 +45,7 @@ jobs:
       - name: Cache rust cargo artifacts
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' && runner.environment == 'github-hosted' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
       - name: Run rustfmt
         run: cargo fmt --all -- --check
@@ -55,10 +55,6 @@ jobs:
         run: cargo check --workspace --all-targets --all-features
       - name: Check with only default features
         run: cargo check --all-targets
-
-      - name: Compile cache stats
-        if: always()
-        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
   cargo_deny:
     name: cargo deny
