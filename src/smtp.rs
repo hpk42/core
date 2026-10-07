@@ -92,6 +92,18 @@ async fn record_success(context: &Context, transport_id: u32) -> Result<()> {
     Ok(())
 }
 
+/// Removes last remembered success for SMTP transport so another transport is tried next time.
+async fn remove_success(context: &Context, transport_id: u32) -> Result<()> {
+    context
+        .sql
+        .execute(
+            "DELETE FROM smtp_success WHERE transport_id = ?",
+            (transport_id,),
+        )
+        .await?;
+    Ok(())
+}
+
 impl Smtp {
     /// Create a new Smtp instances.
     pub fn new() -> Self {
@@ -256,6 +268,7 @@ async fn smtp_send(
         );
         return SendResult::Retry;
     };
+    let transport_id = connection.transport_id;
 
     let send_result = connection
         .send(context, recipients, message.as_bytes())
@@ -299,6 +312,14 @@ async fn smtp_send(
                         SendResult::Retry
                     } else {
                         info!(context, "Permanent error, message sending failed.");
+
+                        if let Err(err) = remove_success(context, transport_id).await {
+                            warn!(
+                                context,
+                                "Failed to remove success for {transport_id}: {err:#}."
+                            )
+                        }
+
                         // If we do not retry, add an info message to the chat.
                         // Yandex error "554 5.7.1 [2] Message rejected under suspicion of SPAM; https://ya.cc/..."
                         // should definitely go here, because user has to open the link to
@@ -352,7 +373,6 @@ async fn smtp_send(
             SendResult::Failure(err)
         }
         Ok(()) => {
-            let transport_id = connection.transport_id;
             if let Err(err) = record_success(context, transport_id).await {
                 warn!(
                     context,
