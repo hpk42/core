@@ -280,6 +280,18 @@ async fn smtp_send(
             // Remote error, retry later.
             info!(context, "SMTP failed to send: {:?}.", &err);
 
+            // Remove recorded SMTP success on any error returned by the server, but not network errors.
+            if matches!(
+                err,
+                async_smtp::error::Error::Permanent(_) | async_smtp::error::Error::Transient(_)
+            ) && let Err(err) = remove_success(context, transport_id).await
+            {
+                warn!(
+                    context,
+                    "Failed to remove success for {transport_id}: {err:#}."
+                )
+            }
+
             let res = match err {
                 async_smtp::error::Error::Permanent(ref response) => {
                     // Workaround for incorrectly configured servers returning permanent errors
@@ -313,13 +325,6 @@ async fn smtp_send(
                     } else {
                         info!(context, "Permanent error, message sending failed.");
 
-                        if let Err(err) = remove_success(context, transport_id).await {
-                            warn!(
-                                context,
-                                "Failed to remove success for {transport_id}: {err:#}."
-                            )
-                        }
-
                         // If we do not retry, add an info message to the chat.
                         // Yandex error "554 5.7.1 [2] Message rejected under suspicion of SPAM; https://ya.cc/..."
                         // should definitely go here, because user has to open the link to
@@ -350,6 +355,7 @@ async fn smtp_send(
                         context,
                         "Transient error {response:?}, postponing retry for later."
                     );
+
                     SendResult::Retry
                 }
                 _ => {
