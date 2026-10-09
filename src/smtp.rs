@@ -66,7 +66,10 @@ async fn sorted_transports(context: &Context) -> Result<Vec<(u32, ConfiguredLogi
         .query_map_vec(
             "SELECT transports.id, configured_param FROM transports
              LEFT JOIN smtp_success ON smtp_success.transport_id=transports.id
-             ORDER BY IFNULL(smtp_success.id, 0) DESC, transports.id ASC",
+             LEFT JOIN smtp_failure ON smtp_failure.transport_id=transports.id
+             ORDER BY IFNULL(smtp_success.id, 0) DESC,
+                      IFNULL(smtp_failure.id, 0) ASC,
+                      transports.id ASC",
             (),
             |row| {
                 let id: u32 = row.get(0)?;
@@ -84,22 +87,36 @@ async fn record_success(context: &Context, transport_id: u32) -> Result<()> {
     // if the row exists already, so it becomes the highest rowid in the table.
     context
         .sql
-        .execute(
-            "INSERT OR REPLACE INTO smtp_success (transport_id) VALUES (?)",
-            (transport_id,),
-        )
+        .transaction(|t| {
+            t.execute(
+                "INSERT OR REPLACE INTO smtp_success (transport_id) VALUES (?)",
+                (transport_id,),
+            )?;
+            t.execute(
+                "DELETE FROM smtp_failure WHERE transport_id = ?",
+                (transport_id,),
+            )?;
+            Ok(())
+        })
         .await?;
     Ok(())
 }
 
 /// Removes last remembered success for SMTP transport so another transport is tried next time.
-async fn remove_success(context: &Context, transport_id: u32) -> Result<()> {
+async fn record_failure(context: &Context, transport_id: u32) -> Result<()> {
     context
         .sql
-        .execute(
-            "DELETE FROM smtp_success WHERE transport_id = ?",
-            (transport_id,),
-        )
+        .transaction(|t| {
+            t.execute(
+                "INSERT OR REPLACE INTO smtp_failure (transport_id) VALUES (?)",
+                (transport_id,),
+            )?;
+            t.execute(
+                "DELETE FROM smtp_success WHERE transport_id = ?",
+                (transport_id,),
+            )?;
+            Ok(())
+        })
         .await?;
     Ok(())
 }
@@ -284,7 +301,7 @@ async fn smtp_send(
             if matches!(
                 err,
                 async_smtp::error::Error::Permanent(_) | async_smtp::error::Error::Transient(_)
-            ) && let Err(err) = remove_success(context, transport_id).await
+            ) && let Err(err) = record_failure(context, transport_id).await
             {
                 warn!(
                     context,
