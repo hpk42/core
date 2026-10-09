@@ -326,3 +326,37 @@ jobs:
           DCC_RS_DEV: ${{ github.workspace }}
         working-directory: python
         run: tox -e doc,py
+
+  relay_functional_checks:
+    name: Relay functional checks
+    needs: ["python_lint", "rpc_server"]
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          show-progress: false
+          persist-credentials: false
+
+      - name: Install python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: 3.14
+
+      - name: Install tox
+        run: pip install tox
+
+      - name: Download deltachat-rpc-server
+        uses: actions/download-artifact@v7
+        with:
+          name: ubuntu-latest-deltachat-rpc-server
+          path: target/debug
+
+      - name: Add deltachat-rpc-server to path
+        run: |
+          chmod +x target/debug/deltachat-rpc-server
+          echo ${{ github.workspace }}/target/debug >> $GITHUB_PATH
+
+      - name: Run relay functional checks
+        working-directory: deltachat-rpc-client
+        run: tox -e py -- tests/relay_functional_checks.py
