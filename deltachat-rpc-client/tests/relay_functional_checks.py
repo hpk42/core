@@ -35,7 +35,7 @@ class Relay:
     def set_soft_bounce(self, enabled):
         """Make postfix answer 4xx instead of 5xx, so that rejections become temporary."""
         cmd = f"postconf -e soft_bounce={'yes' if enabled else 'no'} && postfix reload"
-        subprocess.run(["incus", "exec", self.container, "--", "sh", "-c", cmd], check=True, capture_output=True)
+        subprocess.run(["incus", "exec", self.container, "--", "sh", "-c", cmd], check=True)
         self.soft_bounce = enabled
 
 
