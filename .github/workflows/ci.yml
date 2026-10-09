@@ -357,6 +357,11 @@ jobs:
           chmod +x target/debug/deltachat-rpc-server
           echo ${{ github.workspace }}/target/debug >> $GITHUB_PATH
 
+      - name: Show incus
+        run: |
+          apt-cache policy incus
+          incus version
+
       - name: Run relay functional checks
         working-directory: deltachat-rpc-client
         run: tox -e py -- tests/relay_functional_checks.py
