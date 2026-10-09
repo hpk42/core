@@ -330,8 +330,8 @@ jobs:
   relay_functional_checks:
     name: Relay functional checks
     needs: ["python_lint", "rpc_server"]
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 30
+    runs-on: ${{ vars.LINUX_RUNNER_LARGE || 'ubuntu-latest' }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
@@ -357,10 +357,24 @@ jobs:
           chmod +x target/debug/deltachat-rpc-server
           echo ${{ github.workspace }}/target/debug >> $GITHUB_PATH
 
-      - name: Show incus
+      - name: Set up two relays with cmlxc
         run: |
-          apt-cache policy incus
-          incus version
+          # prepare incus as cmlxc's lxc-test.yml does
+          sudo systemctl stop docker.socket docker || true
+          sudo iptables -P FORWARD ACCEPT
+          sudo sysctl -w fs.inotify.max_user_instances=65535
+          sudo sysctl -w fs.inotify.max_user_watches=65535
+          sudo incus admin init --auto
+          sudo chmod 666 /var/lib/incus/unix.socket
+          sudo chown -R $USER:$USER ~/.config/incus
+          pipx install git+https://github.com/chatmail/cmlxc
+          cmlxc init
+          cmlxc deploy-cmdeploy --source @main relay1
+          cmlxc deploy-cmdeploy --source @main relay2
+          # the test's rpc-server resolves the relays' names on the runner
+          ns=$(incus list ns-localchat -f csv -c 4 | cut -d' ' -f1)
+          sudo resolvectl dns incusbr0 $ns
+          sudo resolvectl domain incusbr0 ~localchat
 
       - name: Run relay functional checks
         working-directory: deltachat-rpc-client
