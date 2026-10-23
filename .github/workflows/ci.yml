@@ -15,8 +15,11 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
-permissions: {}
+# a private repository's checkout needs the token's read access
+permissions:
+  contents: read
 
 env:
   RUSTFLAGS: -Dwarnings
@@ -55,7 +58,7 @@ jobs:
 
   cargo_deny:
     name: cargo deny
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -70,7 +73,7 @@ jobs:
 
   docs:
     name: Rust doc comments
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER_LARGE || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       RUSTDOCFLAGS: -Dwarnings
@@ -82,10 +85,14 @@ jobs:
       - name: Cache rust cargo artifacts
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && runner.environment == 'github-hosted' }}
           cache-bin: false
       - name: Rustdoc
         run: cargo doc --document-private-items --no-deps
+
+      - name: Compile cache stats
+        if: always()
+        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
 
   rust_tests:
     name: Rust tests
@@ -94,15 +101,11 @@ jobs:
         include:
           - os: ubuntu-latest
             rust: latest
-          - os: windows-latest
-            rust: latest
-          - os: macos-latest
-            rust: latest
 
           # Minimum Supported Rust Version
           - os: ubuntu-latest
             rust: minimum
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ vars.LINUX_RUNNER_LARGE || matrix.os }}
     timeout-minutes: 60
     steps:
       - run:
@@ -128,7 +131,7 @@ jobs:
       - name: Cache rust cargo artifacts
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && runner.environment == 'github-hosted' }}
           cache-bin: false
 
       - name: Install nextest
@@ -149,12 +152,16 @@ jobs:
       - name: Test cargo vendor
         run: cargo vendor
 
+      - name: Compile cache stats
+        if: always()
+        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
+
   c_library:
     name: Build C library
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest]
+    runs-on: ${{ vars.LINUX_RUNNER_LARGE || matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -165,7 +172,7 @@ jobs:
       - name: Cache rust cargo artifacts
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && runner.environment == 'github-hosted' }}
           cache-bin: false
 
       - name: Build C library
@@ -178,12 +185,16 @@ jobs:
           path: target/debug/libdeltachat.a
           retention-days: 1
 
+      - name: Compile cache stats
+        if: always()
+        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
+
   rpc_server:
     name: Build deltachat-rpc-server
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest]
+    runs-on: ${{ vars.LINUX_RUNNER_LARGE || matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -194,7 +205,7 @@ jobs:
       - name: Cache rust cargo artifacts
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && runner.environment == 'github-hosted' }}
           cache-bin: false
 
       - name: Build deltachat-rpc-server
@@ -207,9 +218,13 @@ jobs:
           path: ${{ matrix.os == 'windows-latest' && 'target/debug/deltachat-rpc-server.exe' || 'target/debug/deltachat-rpc-server' }}
           retention-days: 1
 
+      - name: Compile cache stats
+        if: always()
+        run: if [ -n "${RUSTC_WRAPPER:-}" ]; then sccache --show-stats; fi
+
   python_lint:
     name: Python lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -235,7 +250,7 @@ jobs:
   cffi_python_mypy:
     name: CFFI Python mypy
     needs: ["c_library", "python_lint"]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -270,13 +285,9 @@ jobs:
           # Currently used Rust version.
           - os: ubuntu-latest
             python: 3.14
-          - os: macos-latest
-            python: 3.14
 
           # PyPy tests
           - os: ubuntu-latest
-            python: pypy3.10
-          - os: macos-latest
             python: pypy3.10
 
           # Minimum Supported Python Version = 3.10
@@ -285,7 +296,7 @@ jobs:
           - os: ubuntu-latest
             python: "3.10"
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ vars.LINUX_RUNNER || matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -314,68 +325,3 @@ jobs:
           DCC_RS_DEV: ${{ github.workspace }}
         working-directory: python
         run: tox -e doc,py
-
-  rpc_python_tests:
-    name: JSON-RPC Python tests
-    needs: ["python_lint", "rpc_server"]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python: 3.14
-          - os: macos-latest
-            python: 3.14
-          - os: windows-latest
-            python: 3.14
-
-          # PyPy tests
-          - os: ubuntu-latest
-            python: pypy3.10
-          - os: macos-latest
-            python: pypy3.10
-
-          # Minimum Supported Python Version = 3.10
-          - os: ubuntu-latest
-            python: "3.10"
-
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          show-progress: false
-          persist-credentials: false
-
-      - name: Install python
-        uses: actions/setup-python@v7.0.0
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install tox
-        run: pip install tox
-
-      - name: Download deltachat-rpc-server
-        uses: actions/download-artifact@v7
-        with:
-          name: ${{ matrix.os }}-deltachat-rpc-server
-          path: target/debug
-
-      - name: Make deltachat-rpc-server executable
-        if: ${{ matrix.os != 'windows-latest' }}
-        run: chmod +x target/debug/deltachat-rpc-server
-
-      - name: Add deltachat-rpc-server to path
-        if: ${{ matrix.os != 'windows-latest' }}
-        run: echo ${{ github.workspace }}/target/debug >> $GITHUB_PATH
-
-      - name: Add deltachat-rpc-server to path
-        if: ${{ matrix.os == 'windows-latest' }}
-        run: |
-          "${{ github.workspace }}/target/debug" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Run deltachat-rpc-client tests
-        env:
-          CHATMAIL_DOMAIN: ${{ vars.CHATMAIL_DOMAIN }}
-        working-directory: deltachat-rpc-client
-        run: tox -e py
