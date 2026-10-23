@@ -549,7 +549,7 @@ async fn next_delete_device_after_timestamp(context: &Context) -> Result<Option<
 const NEXT_EPHEMERAL_TIMESTAMP: &str = "
     SELECT min(ephemeral_timestamp)
     FROM msgs
-    WHERE ephemeral_timestamp != 0
+    WHERE ephemeral_timestamp > 0 -- not != 0, so that SQLite uses msgs_index8
       AND chat_id != ?
     HAVING count(*) > 0";
 
@@ -651,46 +651,48 @@ pub(crate) async fn ephemeral_loop(context: &Context, interrupt_receiver: Receiv
 const MARK_DOWNLOADED_FOR_DELETION: &str = "
     UPDATE imap
     SET target=''
-    WHERE transport_id=?1
-    AND rfc724_mid IN (
-        SELECT rfc724_mid FROM msgs
-        WHERE ((ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2) OR download_state=?3)
-            AND id>9
-        UNION
-        SELECT pre_rfc724_mid FROM msgs
-        WHERE pre_rfc724_mid!=''
-            AND id>9
-    )";
+    WHERE transport_id=?1 AND target!=''
+    AND (EXISTS ( -- few imap rows remain once the server deleted the messages
+            SELECT 1 FROM msgs
+            WHERE rfc724_mid=imap.rfc724_mid
+                AND ((ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2) OR download_state=?3)
+                AND id>9)
+        OR EXISTS (
+            SELECT 1 FROM msgs
+            WHERE pre_rfc724_mid=imap.rfc724_mid
+                AND pre_rfc724_mid!=''
+                AND id>9))";
 
 const MARK_EXPIRED_FOR_DELETION: &str = "
     UPDATE imap
     SET target=''
-    WHERE transport_id=?1
-    AND rfc724_mid IN (
+    WHERE transport_id=?1 AND target!=''
+    AND rfc724_mid IN ( -- from msgs_index8, as imap holds every unexpired message
         SELECT rfc724_mid FROM msgs
-        WHERE ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2 AND id>9
+        WHERE ephemeral_timestamp>0 AND ephemeral_timestamp<=?2 AND id>9
         UNION
         SELECT pre_rfc724_mid FROM msgs
         WHERE pre_rfc724_mid!=''
-            AND ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2 AND id>9
+            AND ephemeral_timestamp>0 AND ephemeral_timestamp<=?2 AND id>9
     )";
 
 const MARK_ENCRYPTED_FOR_DELETION: &str = "
     UPDATE imap
     SET target=''
-    WHERE transport_id=?1
-    AND rfc724_mid IN (
-        SELECT rfc724_mid FROM msgs
-        WHERE id>9
-          AND ((ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2) OR
-               ((param GLOB '*\nc=1*' OR param GLOB 'c=1*') AND download_state=?3))
-        UNION
-        SELECT pre_rfc724_mid FROM msgs
-        WHERE pre_rfc724_mid!=''
-          AND id>9
-          AND ((ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2) OR
-               (param GLOB '*\nc=1*' OR param GLOB 'c=1*'))
-    )";
+    WHERE transport_id=?1 AND target!=''
+    AND (EXISTS (
+            SELECT 1 FROM msgs
+            WHERE rfc724_mid=imap.rfc724_mid
+              AND id>9
+              AND ((ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2) OR
+                   ((param GLOB '*\nc=1*' OR param GLOB 'c=1*') AND download_state=?3)))
+        OR EXISTS (
+            SELECT 1 FROM msgs
+            WHERE pre_rfc724_mid=imap.rfc724_mid
+              AND pre_rfc724_mid!=''
+              AND id>9
+              AND ((ephemeral_timestamp!=0 AND ephemeral_timestamp<=?2) OR
+                   (param GLOB '*\nc=1*' OR param GLOB 'c=1*'))))";
 
 /// Schedules expired IMAP messages for deletion on the server.
 ///

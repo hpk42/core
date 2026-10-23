@@ -576,6 +576,26 @@ async fn test_delete_expired_imap_messages() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_expiration_queries_do_not_scan_msgs() -> Result<()> {
+    let t = TestContext::new_alice().await;
+    for query in [
+        NEXT_EPHEMERAL_TIMESTAMP,
+        MARK_DOWNLOADED_FOR_DELETION,
+        MARK_EXPIRED_FOR_DELETION,
+        MARK_ENCRYPTED_FOR_DELETION,
+    ] {
+        for step in t.query_plan(query).await? {
+            assert!(
+                !step.starts_with("SCAN msgs")
+                    && !step.ends_with("msgs USING INTEGER PRIMARY KEY (rowid>?)"),
+                "{query}\n{step}"
+            );
+        }
+    }
+    Ok(())
+}
+
 // Regression test for a bug in the timer rollback protection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_ephemeral_timer_references() -> Result<()> {

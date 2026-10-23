@@ -227,3 +227,32 @@ async fn test_key_contacts_migration_verified() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_imap_pending_deletions_index_unversioned() -> Result<()> {
+    let t = TestContext::new().await;
+    let version = t.sql.get_raw_config_int(VERSION_CFG).await?;
+    let index_sql = "SELECT sql FROM sqlite_master WHERE name='imap_pending_deletions'";
+    let expected: Option<String> = t.sql.query_get_value(index_sql, ()).await?;
+    assert!(expected.is_some());
+
+    t.sql
+        .execute("DROP INDEX imap_pending_deletions", ())
+        .await?;
+    run(&t, &t.sql).await?;
+    assert_eq!(t.sql.query_get_value(index_sql, ()).await?, expected);
+
+    t.sql
+        .execute("DROP INDEX imap_pending_deletions", ())
+        .await?;
+    t.sql
+        .execute("CREATE INDEX imap_pending_deletions ON imap(folder)", ())
+        .await?;
+    run(&t, &t.sql).await?;
+    assert_eq!(t.sql.query_get_value(index_sql, ()).await?, expected);
+
+    run(&t, &t.sql).await?;
+    assert_eq!(t.sql.query_get_value(index_sql, ()).await?, expected);
+    assert_eq!(t.sql.get_raw_config_int(VERSION_CFG).await?, version);
+    Ok(())
+}

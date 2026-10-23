@@ -71,7 +71,7 @@ const PENDING_DELETIONS: &str = "
     ORDER BY target, uid";
 
 const PENDING_SEEN_FLAGS: &str = "
-    SELECT imap.id, uid, folder FROM imap, imap_markseen
+    SELECT imap.id, uid, folder FROM imap_markseen CROSS JOIN imap -- loop over imap_markseen, not over every imap row
     WHERE imap.id = imap_markseen.id
     AND imap.transport_id=?
     AND target = folder";

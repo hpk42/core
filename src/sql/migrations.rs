@@ -2680,6 +2680,24 @@ CREATE TABLE smtp2 (
             .await?;
     }
 
+    // Not a numbered migration, so that builds carrying it leave the database version alone.
+    let index =
+        "CREATE INDEX imap_pending_deletions ON imap(transport_id, folder) WHERE target != folder";
+    let existing: Option<String> = sql
+        .query_get_value(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='imap_pending_deletions'",
+            (),
+        )
+        .await?;
+    if existing.as_deref() != Some(index) {
+        sql.transaction(move |transaction| {
+            transaction.execute("DROP INDEX IF EXISTS imap_pending_deletions", ())?;
+            transaction.execute(index, ())?;
+            Ok(())
+        })
+        .await?;
+    }
+
     let new_version = sql
         .get_raw_config_int(VERSION_CFG)
         .await?

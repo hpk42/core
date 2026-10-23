@@ -116,3 +116,20 @@ fn test_uid_grouper() {
         vec![("INBOX".to_string(), vec![1, 2, 3], "2:3".to_string())]
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_loop_queries_do_not_scan_imap() -> Result<()> {
+    let t = TestContext::new_alice().await;
+    for query in [PENDING_DELETIONS, PENDING_SEEN_FLAGS] {
+        for step in t.query_plan(query).await? {
+            let reads_imap = step.contains(" imap ") || step.ends_with(" imap");
+            assert!(
+                !reads_imap
+                    || step.contains("USING INTEGER PRIMARY KEY")
+                    || step.contains("USING INDEX imap_pending_deletions "),
+                "{query}\n{step}"
+            );
+        }
+    }
+    Ok(())
+}
