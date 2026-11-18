@@ -7,7 +7,7 @@ name: Rust CI
 # Cancel previously started workflow runs
 # when the branch is updated.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 on:
@@ -15,6 +15,9 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+  schedule:
+    - cron: "17 1 * * *"
 
 permissions: {}
 
@@ -30,11 +33,13 @@ env:
 jobs:
   lint_rust:
     name: Lint Rust
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER_LARGE || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       # Tests always unwind: match it so dependencies are only checked once.
       CARGO_PROFILE_DEV_PANIC: unwind
+      # on bb33, check against the system OpenSSL instead of building the vendored one's C sources
+      OPENSSL_NO_VENDOR: ${{ vars.LINUX_RUNNER && '1' || '0' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -45,6 +50,7 @@ jobs:
       - run: rustup override set $RUST_VERSION
         shell: bash
       - name: Cache rust cargo artifacts
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -58,7 +64,9 @@ jobs:
 
   cargo_deny:
     name: cargo deny
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    # an advisory published overnight would turn the nightly red with nothing changed
+    if: github.event_name != 'schedule'
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -73,16 +81,18 @@ jobs:
 
   docs:
     name: Rust doc comments
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER_LARGE || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       RUSTDOCFLAGS: -Dwarnings
+      OPENSSL_NO_VENDOR: ${{ vars.LINUX_RUNNER && '1' || '0' }}
     steps:
       - uses: actions/checkout@v7
         with:
           show-progress: false
           persist-credentials: false
       - name: Cache rust cargo artifacts
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -105,7 +115,7 @@ jobs:
           # Minimum Supported Rust Version
           - os: ubuntu-latest
             rust: minimum
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.LINUX_RUNNER_LARGE || matrix.os == 'macos-latest' && vars.MACOS_RUNNER || matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || 'bb33-windows') || matrix.os }}
     timeout-minutes: 60
     steps:
       - run:
@@ -129,10 +139,16 @@ jobs:
         shell: bash
 
       - name: Cache rust cargo artifacts
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
+
+      - name: Keep the build between jobs on bb33
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: '[ -z "$BB33_CARGO_TARGET_DIR" ] || echo "CARGO_TARGET_DIR=$BB33_CARGO_TARGET_DIR" >> "$GITHUB_ENV"'
 
       - name: Install nextest
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91
@@ -157,8 +173,12 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.LINUX_RUNNER_LARGE || matrix.os == 'macos-latest' && vars.MACOS_RUNNER || matrix.os }}
     timeout-minutes: 60
+    # the sha256 of the library each leg on bb33 put into bb33's artifact cache
+    outputs:
+      ubuntu-latest: ${{ steps.bb33.outputs.ubuntu-latest }}
+      macos-latest: ${{ steps.bb33.outputs.macos-latest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -166,6 +186,7 @@ jobs:
           persist-credentials: false
 
       - name: Cache rust cargo artifacts
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -174,7 +195,22 @@ jobs:
       - name: Build C library
         run: cargo build -p deltachat_ffi --locked
 
+      # GitHub's artifacts come at about 0.5 MB/s to bb33; the jobs after this one on bb33
+      # take the library from there, named and checked by the sha256 passed on as an output.
+      # GitHub gets the artifact only off bb33 or when this fails, the upload took up to 37 s here.
+      - name: Upload C library to bb33
+        id: bb33
+        if: runner.environment == 'self-hosted'
+        continue-on-error: true
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          sha=$(shasum -a 256 target/debug/libdeltachat.a | cut -c1-64)
+          curl -fsS --retry 2 -T target/debug/libdeltachat.a "http://10.33.0.16/artifacts/$sha"
+          echo "$OS=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Upload C library
+        if: steps.bb33.outcome != 'success'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.os }}-libdeltachat.a
@@ -186,8 +222,13 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.LINUX_RUNNER_LARGE || matrix.os == 'macos-latest' && vars.MACOS_RUNNER || matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || 'bb33-windows') || matrix.os }}
     timeout-minutes: 60
+    # the sha256 of the server each leg on bb33 put into bb33's artifact cache
+    outputs:
+      ubuntu-latest: ${{ steps.bb33.outputs.ubuntu-latest }}
+      macos-latest: ${{ steps.bb33.outputs.macos-latest }}
+      windows-latest: ${{ steps.bb33.outputs.windows-latest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -195,24 +236,46 @@ jobs:
           persist-credentials: false
 
       - name: Cache rust cargo artifacts
+        if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
 
+      - name: Keep the build between jobs on bb33
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: '[ -z "$BB33_CARGO_TARGET_DIR" ] || echo "CARGO_TARGET_DIR=$BB33_CARGO_TARGET_DIR" >> "$GITHUB_ENV"'
+
       - name: Build deltachat-rpc-server
         run: cargo build -p deltachat-rpc-server --locked
 
+      - name: Upload deltachat-rpc-server to bb33
+        id: bb33
+        if: runner.environment == 'self-hosted'
+        continue-on-error: true
+        env:
+          OS: ${{ matrix.os }}
+          EXE: ${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          SUM: ${{ matrix.os == 'windows-latest' && 'sha256sum' || 'shasum -a 256' }}
+        shell: bash
+        run: |
+          exe=${CARGO_TARGET_DIR:-target}/debug/deltachat-rpc-server$EXE
+          sha=$($SUM "$exe" | cut -c1-64)
+          curl -fsS --retry 2 -T "$exe" "http://10.33.0.16/artifacts/$sha"
+          echo "$OS=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Upload deltachat-rpc-server
+        if: steps.bb33.outcome != 'success'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.os }}-deltachat-rpc-server
-          path: ${{ matrix.os == 'windows-latest' && 'target/debug/deltachat-rpc-server.exe' || 'target/debug/deltachat-rpc-server' }}
+          path: ${{ env.CARGO_TARGET_DIR || 'target' }}/debug/deltachat-rpc-server${{ matrix.os == 'windows-latest' && '.exe' || '' }}
           retention-days: 1
 
   python_lint:
     name: Python lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -238,7 +301,7 @@ jobs:
   cffi_python_mypy:
     name: CFFI Python mypy
     needs: ["c_library", "python_lint"]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -246,7 +309,19 @@ jobs:
           show-progress: false
           persist-credentials: false
 
+      - name: Download libdeltachat.a from bb33
+        id: bb33
+        if: runner.environment == 'self-hosted' && needs.c_library.outputs.ubuntu-latest
+        continue-on-error: true
+        env:
+          SHA256: ${{ needs.c_library.outputs.ubuntu-latest }}
+        run: |
+          mkdir -p target/debug
+          curl -fsS --retry 2 -o target/debug/libdeltachat.a "http://10.33.0.16/artifacts/$SHA256"
+          echo "$SHA256  target/debug/libdeltachat.a" | shasum -a 256 -c
+
       - name: Download libdeltachat.a
+        if: steps.bb33.outcome != 'success'
         uses: actions/download-artifact@v7
         with:
           name: ubuntu-latest-libdeltachat.a
@@ -288,7 +363,7 @@ jobs:
           - os: ubuntu-latest
             python: "3.10"
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.LINUX_RUNNER || matrix.os == 'macos-latest' && vars.MACOS_RUNNER || matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -296,7 +371,19 @@ jobs:
           show-progress: false
           persist-credentials: false
 
+      - name: Download libdeltachat.a from bb33
+        id: bb33
+        if: runner.environment == 'self-hosted' && needs.c_library.outputs[matrix.os]
+        continue-on-error: true
+        env:
+          SHA256: ${{ needs.c_library.outputs[matrix.os] }}
+        run: |
+          mkdir -p target/debug
+          curl -fsS --retry 2 -o target/debug/libdeltachat.a "http://10.33.0.16/artifacts/$SHA256"
+          echo "$SHA256  target/debug/libdeltachat.a" | shasum -a 256 -c
+
       - name: Download libdeltachat.a
+        if: steps.bb33.outcome != 'success'
         uses: actions/download-artifact@v7
         with:
           name: ${{ matrix.os }}-libdeltachat.a
@@ -312,7 +399,7 @@ jobs:
 
       - name: Run python tests
         env:
-          CHATMAIL_DOMAIN: ${{ vars.CHATMAIL_DOMAIN }}
+          CHATMAIL_DOMAIN: ${{ runner.environment == 'self-hosted' && (github.event_name == 'schedule' && vars.NIGHTLY_CHATMAIL_DOMAIN || vars.LINUX_CHATMAIL_DOMAIN) || vars.CHATMAIL_DOMAIN }}
           DCC_RS_TARGET: debug
           DCC_RS_DEV: ${{ github.workspace }}
         working-directory: python
@@ -342,7 +429,7 @@ jobs:
           - os: ubuntu-latest
             python: "3.10"
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.LINUX_RUNNER || matrix.os == 'macos-latest' && vars.MACOS_RUNNER || matrix.os == 'windows-latest' && (vars.WINDOWS_RUNNER || 'bb33-windows') || matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -358,7 +445,22 @@ jobs:
       - name: Install tox
         run: pip install tox
 
+      - name: Download deltachat-rpc-server from bb33
+        id: bb33
+        if: runner.environment == 'self-hosted' && needs.rpc_server.outputs[matrix.os]
+        continue-on-error: true
+        env:
+          SHA256: ${{ needs.rpc_server.outputs[matrix.os] }}
+          EXE: ${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          SUM: ${{ matrix.os == 'windows-latest' && 'sha256sum' || 'shasum -a 256' }}
+        shell: bash
+        run: |
+          mkdir -p target/debug
+          curl -fsS --retry 2 -o target/debug/deltachat-rpc-server$EXE "http://10.33.0.16/artifacts/$SHA256"
+          echo "$SHA256  target/debug/deltachat-rpc-server$EXE" | $SUM -c
+
       - name: Download deltachat-rpc-server
+        if: steps.bb33.outcome != 'success'
         uses: actions/download-artifact@v7
         with:
           name: ${{ matrix.os }}-deltachat-rpc-server
@@ -379,6 +481,6 @@ jobs:
 
       - name: Run deltachat-rpc-client tests
         env:
-          CHATMAIL_DOMAIN: ${{ vars.CHATMAIL_DOMAIN }}
+          CHATMAIL_DOMAIN: ${{ runner.environment == 'self-hosted' && (github.event_name == 'schedule' && vars.NIGHTLY_CHATMAIL_DOMAIN || vars.LINUX_CHATMAIL_DOMAIN) || vars.CHATMAIL_DOMAIN }}
         working-directory: deltachat-rpc-client
         run: tox -e py

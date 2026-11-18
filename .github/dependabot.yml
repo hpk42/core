@@ -6,7 +6,7 @@ updates:
       interval: "monthly"
     commit-message:
       prefix: "chore(cargo)"
-    open-pull-requests-limit: 50
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
 
@@ -14,6 +14,7 @@ updates:
   # <https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot>
   - package-ecosystem: "github-actions"
     directory: "/"
+    open-pull-requests-limit: 0
     schedule:
       interval: "monthly"
     cooldown:
